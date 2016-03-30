@@ -2,6 +2,7 @@
 
 import pandas as pd
 import numpy as np
+import os
 
 
 def parse_gmt(gmt_file):
@@ -64,6 +65,16 @@ def get_gene_set_values(matrix, paired):
     return paired['gene_sets'].apply(lambda x: matrix.ix[x].dropna().mean())
 
 
+def area(x, y, threshold=1, xy_range=[[0, 6], [0, 6]], bins=24):
+    """
+    Calculate the relative area of bins ocuppied by points in a two-dimentional space,
+    over a certain threshold.
+    """
+    hist, xedges, yedges = np.histogram2d(x, y, bins=bins, range=xy_range)
+    over_threshold = hist > threshold
+    return over_threshold.sum() * (xedges[1] - xedges[0]) * (yedges[1] - yedges[0])
+
+
 def compute_metrics(paired_values, paired):
     """
     Given two continuous distributions, compute measures of di/similarity,
@@ -89,13 +100,18 @@ def compute_metrics(paired_values, paired):
             series["r"] = pearsonr(paired_values.ix[idx, 'up'], paired_values.ix[idx, 'down'])[0]
             # RMSE
             series["error"] = rmse(paired_values.ix[idx, 'up'], paired_values.ix[idx, 'down'])
+            # Area
+            series["area"] = area(paired_values.ix[idx, 'up'], paired_values.ix[idx, 'down'])
             # KS-test
             series["p_values"] = ks_2samp(paired_values.ix[idx, 'up'], paired_values.ix[idx, 'down'])[1]
 
             metrics = metrics.append(series)
 
     # correct p-values
-    metrics["corrected_p_values"] = multipletests(metrics["p_values"])[1]
+    p = multipletests(metrics["p_values"])[1]
+    # -nlog10, but replace inf with 15
+    p[p == 0] = 1e-15
+    metrics["corrected_log_pvalues"] = -np.log10(p)
     return metrics
 
 
@@ -119,36 +135,25 @@ df2 = df.drop([
 set_matrix = get_gene_set_values(df2, paired)
 
 # Get metrics of gene set comparisons
-metrics = compute_metrics(set_matrix)
+metrics = compute_metrics(set_matrix, paired)
 
 # Rank system
+# rank every variable
+# in a way that the lower the rank, the best is the feature
+metrics['rank_error'] = metrics['error'].rank(ascending=False)
+metrics['rank_mean_difference'] = metrics['mean_difference'].abs().rank(ascending=False)
+metrics['rank_r'] = metrics['r'].abs().rank(ascending=False)
+# metrics['rank_size'] = (metrics['size_down'] + metrics['size_up']).rank(ascending=False)  # combine size of both sets
+metrics['rank_area'] = metrics['area'].rank(ascending=False)
+metrics['rank_p_values'] = metrics['p_values'].rank(ascending=True)
+
+# combine ranks
+metrics['min_rank'] = metrics.loc[:, metrics.columns.str.contains("rank_")].min(axis=1)
+metrics['ave_rank'] = metrics.loc[:, metrics.columns.str.contains("rank_")].mean(axis=1)
+metrics['max_rank'] = metrics.loc[:, metrics.columns.str.contains("rank_")].max(axis=1)
+
+# sort stringently (max rank)
+metrics.sort_values(['max_rank', 'ave_rank', 'min_rank'], inplace=True)
 
 # Save
-
-
-# Some plots
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-sns.set_style("white")
-
-# rank vs mean_differenceerence
-plt.scatter(metrics["mean_difference"].rank(), metrics["mean_difference"])
-
-
-# visualize distribution of up vs down for some sets
-s_a = metrics["mean_difference"].argmax()
-s_rs = np.random.choice(metrics["mean_difference"].index, 23)
-s_z = metrics["mean_difference"].argmin()
-
-fig, axis = plt.subplots(5, 5, sharex=True, sharey=True)
-axis = axis.flatten()
-
-axis[0].scatter(set_matrix.ix[s_a, "down"], set_matrix.ix[s_a, "up"])
-for i in range(23):
-    axis[i + 1].scatter(set_matrix.ix[s_rs[i], "down"], set_matrix.ix[s_rs[i], "up"])
-axis[-1].scatter(set_matrix.ix[s_z, "down"], set_matrix.ix[s_z, "up"])
-
-
-# Volcano plot
-plt.scatter(metrics['mean_difference'], -np.log10(metrics['p_values']))
+metrics.reset_index().to_csv(os.path.join("enriched_gene_sets.csv"), index=False)
