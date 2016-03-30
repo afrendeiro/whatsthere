@@ -3,6 +3,13 @@
 import pandas as pd
 import numpy as np
 import os
+import itertools
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+sns.set_style("white")
 
 
 def parse_gmt(gmt_file):
@@ -115,6 +122,8 @@ def compute_metrics(paired_values, paired):
     return metrics
 
 
+results_dir = "results"
+
 "http://software.broadinstitute.org/gsea/msigdb/download_file.jsp?filePath=/resources/msigdb/5.1/msigdb.v5.1.symbols.gmt"
 gmt_file = "msigdb.v5.1.symbols.gmt"
 
@@ -156,4 +165,38 @@ metrics['max_rank'] = metrics.loc[:, metrics.columns.str.contains("rank_")].max(
 metrics.sort_values(['max_rank', 'ave_rank', 'min_rank'], inplace=True)
 
 # Save
-metrics.reset_index().to_csv(os.path.join("enriched_gene_sets.csv"), index=False)
+metrics.reset_index().to_csv(os.path.join(results_dir, "enriched_gene_sets.csv"), index=False)
+
+
+# PLOTS
+# Variable distribution and rank vs distribution
+variables = metrics.columns[~metrics.columns.str.contains("rank")]
+fig, axis = plt.subplots(2, len(variables), figsize=(25, 6))
+for i, variable in enumerate(variables):
+    sns.distplot(metrics[variable], ax=axis[0][i])
+    axis[1][i].scatter(metrics[variable].rank(), metrics[variable])
+fig.savefig(os.path.join(results_dir, "metrics.distribution.svg"), bbox_inches="tight")
+
+# Pairwise variables
+len_plots = len(list(itertools.combinations(variables, 2)))
+fig, axis = plt.subplots(4, len_plots / 4, figsize=(20, 20))
+axis = axis.flatten()
+for i, (var1, var2) in enumerate(itertools.combinations(variables, 2)):
+    axis[i].scatter(metrics[var1], metrics[var2])
+    axis[i].set_xlabel(var1)
+    axis[i].set_ylabel(var2)
+fig.savefig(os.path.join(results_dir, "metrics.pairwise_scatter.svg"), bbox_inches="tight")
+
+# visualize distribution of up vs down for some sets
+for variable in variables:
+    s_a = metrics[variable].argmax()
+    s_rs = np.random.choice(metrics[variable].index, 23)
+    s_z = metrics[variable].argmin()
+
+    fig, axis = plt.subplots(5, 5, sharex=True, sharey=True, figsize=(8, 8))
+    axis = axis.flatten()
+    axis[0].scatter(set_matrix.ix[s_a, "down"], set_matrix.ix[s_a, "up"])
+    for i in range(23):
+        axis[i + 1].scatter(set_matrix.ix[s_rs[i], "down"], set_matrix.ix[s_rs[i], "up"])
+    axis[-1].scatter(set_matrix.ix[s_z, "down"], set_matrix.ix[s_z, "up"])
+    fig.savefig(os.path.join(results_dir, "values.pairwise_scatter.{}.svg".format(variable)), bbox_inches="tight")
